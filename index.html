@@ -4,45 +4,44 @@
   <meta charset="UTF-8">
   <title>The Viscous Bonds</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- MediaPipe Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
   <style>
-    body {
-      margin: 0;
-      overflow: hidden;
-      background-color: #001133;
-    }
-    canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-    .fade-in {
-        animation: fadeIn 1.5s ease-in-out 1s forwards;
-    }
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
+    body { margin: 0; overflow: hidden; background-color: #001133; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .fade-in { animation: fadeIn 1.5s ease-in-out 1s forwards; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   </style>
+<link rel="stylesheet" href="/index.css">
 </head>
 <body class="bg-[#001133]">
 
   <!-- Start Overlay -->
-  <div id="start-overlay" class="absolute inset-0 z-20 flex items-center justify-center bg-[#001133] transition-opacity duration-[1500ms]">
+  <div id="start-overlay" class="absolute inset-0 z-30 flex items-center justify-center bg-[#001133] transition-opacity duration-[1500ms]">
     <button id="start-button" class="text-white/70 border border-white/50 rounded-full px-8 py-3 text-lg font-light tracking-widest hover:bg-white/10 hover:text-white transition-all duration-500 ease-in-out">
       LastNight
     </button>
+  </div>
+
+  <!-- Debug UI -->
+  <div id="debug-ui" class="absolute top-2 left-2 z-20 p-2 bg-black/30 text-white/70 font-mono text-xs rounded hidden">
+    <div id="status-text">Status: N/A</div>
   </div>
 
   <!-- Main Content -->
   <div id="main-container" class="w-screen h-screen cursor-pointer relative" style="background-image: radial-gradient(circle at 50% 50%, #2a1a1930, #001133 70%);">
     <canvas id="render-canvas"></canvas>
   </div>
+  
+  <!-- MediaPipe Camera Feed (now hidden) -->
+  <video id="camera-feed" class="hidden" muted autoplay playsinline></video>
 
   <!-- Audio Player -->
   <audio id="audio-player" src="music.mp3" loop></audio>
 
   <!-- Mute Button -->
-  <button id="mute-button" class="absolute bottom-4 right-4 z-10 text-white/50 hover:text-white transition-opacity duration-500 opacity-0 hidden">
+  <button id="mute-button" class="absolute top-4 right-4 z-20 text-white/50 hover:text-white transition-opacity duration-500 opacity-0 hidden">
     <svg id="unmuted-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
     </svg>
@@ -56,7 +55,7 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.166.1/build/three.module.js';
 
     // --- DOM Elements ---
-    const canvas = document.getElementById('render-canvas');
+    const renderCanvas = document.getElementById('render-canvas');
     const audioPlayer = document.getElementById('audio-player');
     const startOverlay = document.getElementById('start-overlay');
     const startButton = document.getElementById('start-button');
@@ -64,179 +63,175 @@
     const unmutedIcon = document.getElementById('unmuted-icon');
     const mutedIcon = document.getElementById('muted-icon');
     const mainContainer = document.getElementById('main-container');
+    const cameraFeed = document.getElementById('camera-feed');
+    const debugUi = document.getElementById('debug-ui');
+    const statusText = document.getElementById('status-text');
 
     // --- Global State ---
-    let animationFrameId = null;
-    let time = 0;
-    let scene, camera, renderer, characterSprites, connections, particleStream, particleMaterial, particleGeometry;
-    let particles = [];
-    let sentences = [];
+    let time = 0, scene, camera, renderer, characterSprites, particleStream, particleMaterial, particleGeometry;
+    let particles = [], sentences = [], connections = [];
+    let isStarted = false, isMuted = false;
     let mousePosition = { x: null, y: null };
-    let isStarted = false;
-    let isMuted = false;
+    let interactionState = 'OPEN'; // OPEN, SQUINT, CLOSED
+    
+    // --- Responsive Sizing State ---
+    let scaleFactor, fontSize, lineHeight, mouseRadius, breakThreshold, particleSize, squintParticleSize;
 
-    // --- Physics & Display Constants ---
-    const FONT_SIZE = 16;
-    const LINE_HEIGHT = 28;
-    const MOUSE_RADIUS = 20;
-    const REPULSION_STRENGTH = 1.5;
-    const RESTORING_FORCE = 0.002;
-    const DAMPING = 0.92;
-    const BREAK_THRESHOLD = 40;
-    const SWAY_AMPLITUDE_X = 5;
-    const SWAY_AMPLITUDE_Y = 3;
-    const SWAY_FREQUENCY = 0.5;
+    // --- Base Physics & Display Constants ---
+    const BASE_FONT_SIZE = 16, BASE_LINE_HEIGHT = 28;
+    const RESTORING_FORCE = 0.002, DAMPING = 0.92;
+    const SWAY_AMPLITUDE_X = 5, SWAY_AMPLITUDE_Y = 3, SWAY_FREQUENCY = 0.5;
     const PARTICLES_PER_CONNECTION = 20;
+    const EAR_CLOSED_THRESHOLD = 0.1, EAR_SQUINT_THRESHOLD = 0.25;
+    const BASE_MOUSE_RADIUS = 30, REPULSION_STRENGTH = 1.5, BASE_BREAK_THRESHOLD = 40;
+    const BASE_PARTICLE_SIZE = 1.5, SQUINT_PARTICLE_SIZE = 5.0;
 
     const lyricsSource = "麥記的最後一夜 白燈、廣東歌與露宿者 這惡俗的不捨 比一起更好過些 才是你遠走的主因 或者? 麥記的最後一夜 橙汁、朱古力與露宿者 合照留下一些 轉地方睡最後今夜 完結這一場冬天的狂野 電卷風馳 從此各自上車";
 
-    function createGlowTexture() {
-        const canvas = document.createElement('canvas');
-        const size = 64;
-        canvas.width = size;
-        canvas.height = size;
-        const context = canvas.getContext('2d');
-        const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-        gradient.addColorStop(0, 'rgba(255,255,255,1)');
-        gradient.addColorStop(0.2, 'rgba(255,255,255,0.7)');
-        gradient.addColorStop(0.5, 'rgba(255,255,255,0.2)');
-        gradient.addColorStop(1, 'rgba(255,255,255,0)');
-        context.fillStyle = gradient;
-        context.fillRect(0, 0, size, size);
-        return new THREE.CanvasTexture(canvas);
-    }
+    function updateSizing() {
+        const lines = lyricsSource.split(' ').filter(line => line.length > 0);
+        if (lines.length === 0) {
+            scaleFactor = 1;
+        } else {
+            // Calculate scale factor based on height to fill 80% of the screen
+            const totalContentHeightAtBase = lines.length * BASE_LINE_HEIGHT;
+            const scaleFactorHeight = (mainContainer.clientHeight * 0.8) / totalContentHeightAtBase;
 
-    function createCharacterSprite(char) {
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        const size = 64;
-        const font_size = FONT_SIZE * 2;
-        canvas.width = size;
-        canvas.height = size;
-        context.shadowColor = '#FFFFFF';
-        context.shadowBlur = 5;
-        context.font = `${font_size}px serif`;
-        context.fillStyle = '#041C32';
-        context.textAlign = 'center';
-        context.textBaseline = 'middle';
-        context.fillText(char, size / 2, size / 2);
-        context.fillText(char, size / 2, size / 2);
-        const texture = new THREE.CanvasTexture(canvas);
-        const material = new THREE.SpriteMaterial({ map: texture });
-        const sprite = new THREE.Sprite(material);
-        sprite.scale.set(size / 2, size / 2, 1);
-        return sprite;
+            // Calculate scale factor based on width to fill 90% of the screen
+            const longestLineLength = Math.max(...lines.map(l => l.length));
+            const charSpacingAtBase = BASE_FONT_SIZE + 4; // Approx char width + padding
+            const totalContentWidthAtBase = longestLineLength * charSpacingAtBase;
+            const scaleFactorWidth = (mainContainer.clientWidth * 0.9) / totalContentWidthAtBase;
+
+            // Use the smaller of the two scale factors to ensure everything fits
+            scaleFactor = Math.min(scaleFactorHeight, scaleFactorWidth, 2.5); // Cap at 2.5x
+        }
+        
+        fontSize = BASE_FONT_SIZE * scaleFactor;
+        lineHeight = BASE_LINE_HEIGHT * scaleFactor;
+        mouseRadius = BASE_MOUSE_RADIUS * scaleFactor;
+        breakThreshold = BASE_BREAK_THRESHOLD * scaleFactor;
+        particleSize = BASE_PARTICLE_SIZE * scaleFactor;
+        squintParticleSize = SQUINT_PARTICLE_SIZE * scaleFactor;
+        
+        if (particleMaterial) {
+            particleMaterial.size = particleSize;
+        }
     }
 
     function initThree() {
-        const width = mainContainer.clientWidth;
-        const height = mainContainer.clientHeight;
-        
+        const { clientWidth: width, clientHeight: height } = mainContainer;
         scene = new THREE.Scene();
         camera = new THREE.OrthographicCamera(width / -2, width / 2, height / 2, height / -2, -100, 100);
         camera.position.z = 5;
-        
-        renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+        renderer = new THREE.WebGLRenderer({ canvas: renderCanvas, alpha: true, antialias: true });
         renderer.setSize(width, height);
         renderer.setPixelRatio(window.devicePixelRatio);
 
         particleMaterial = new THREE.PointsMaterial({
-            map: createGlowTexture(),
-            color: 0xFFFFFF,
-            size: 1.5,
-            blending: THREE.AdditiveBlending,
-            transparent: true,
-            opacity: 0.4,
-            sizeAttenuation: true,
-            depthWrite: false,
+            map: createGlowTexture(), color: 0xFFFFFF, size: particleSize, blending: THREE.AdditiveBlending,
+            transparent: true, opacity: 0.4, sizeAttenuation: true, depthWrite: false,
         });
     }
 
     function initializeParticles() {
         if (!scene) return;
-        
         if (particleStream) scene.remove(particleStream);
         if (particleGeometry) particleGeometry.dispose();
         if (characterSprites) characterSprites.forEach(s => scene.remove(s));
-
-        characterSprites = [];
-        connections = [];
+        characterSprites = []; connections = [];
         
-        const containerWidth = mainContainer.clientWidth;
-        const containerHeight = mainContainer.clientHeight;
-
+        const { clientWidth: containerWidth, clientHeight: containerHeight } = mainContainer;
         const lines = lyricsSource.split(' ').filter(line => line.length > 0);
         let particleIdCounter = 0;
-        
-        const newSentences = [];
-        const allParticles = [];
-
-        const totalContentHeight = lines.length * LINE_HEIGHT;
+        const newSentences = [], allParticles = [];
+        const totalContentHeight = lines.length * lineHeight;
         const startY = (containerHeight - totalContentHeight) / 2;
+        const charSpacing = fontSize + (4 * scaleFactor);
 
         lines.forEach((line, sentenceIndex) => {
             const sentenceParticleIds = [];
-            const sentenceWidth = line.length * (FONT_SIZE + 4);
+            const sentenceWidth = line.length * charSpacing;
             const startX = (containerWidth - sentenceWidth) / 2;
-
             for (let i = 0; i < line.length; i++) {
                 const char = line[i];
                 const particleId = particleIdCounter++;
-                const originX = startX + i * (FONT_SIZE + 4) - containerWidth / 2;
-                const originY = -(startY + sentenceIndex * LINE_HEIGHT) + containerHeight / 2;
-
-                const particle = {
-                    id: particleId, char, sentenceId: sentenceIndex,
-                    originX, originY,
-                    x: originX, y: originY,
-                    vx: 0, vy: 0,
-                };
-                sentenceParticleIds.push(particleId);
-                allParticles.push(particle);
-
+                const originX = startX + i * charSpacing - containerWidth / 2;
+                const originY = -(startY + sentenceIndex * lineHeight) + containerHeight / 2;
+                const particle = { id: particleId, char, sentenceId: sentenceIndex, originX, originY, x: originX, y: originY, vx: 0, vy: 0 };
+                sentenceParticleIds.push(particleId); allParticles.push(particle);
                 const sprite = createCharacterSprite(char);
                 sprite.position.set(originX, originY, 1);
-                characterSprites.push(sprite);
-                scene.add(sprite);
+                characterSprites.push(sprite); scene.add(sprite);
             }
             newSentences.push({ id: sentenceIndex, particleIds: sentenceParticleIds });
         });
-
-        particles = allParticles;
-        sentences = newSentences;
+        particles = allParticles; sentences = newSentences;
 
         let particleStreamIndex = 0;
         for (const sentence of newSentences) {
             for (let i = 0; i < sentence.particleIds.length - 1; i++) {
-                const p1 = allParticles[sentence.particleIds[i]];
-                const p2 = allParticles[sentence.particleIds[i + 1]];
-                
-                const curve = new THREE.CatmullRomCurve3([
-                    new THREE.Vector3(p1.x, p1.y, 0),
-                    new THREE.Vector3(),
-                    new THREE.Vector3(),
-                    new THREE.Vector3(p2.x, p2.y, 0)
-                ]);
-                
-                connections.push({
-                    curve,
-                    p1_id: p1.id,
-                    p2_id: p2.id,
-                    noiseSeed: Math.random() * 100,
-                    particleStartIndex: particleStreamIndex
-                });
+                const p1 = allParticles[sentence.particleIds[i]], p2 = allParticles[sentence.particleIds[i + 1]];
+                const curve = new THREE.CatmullRomCurve3([new THREE.Vector3(p1.x, p1.y, 0), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(p2.x, p2.y, 0)]);
+                connections.push({ curve, p1_id: p1.id, p2_id: p2.id, noiseSeed: Math.random() * 100, particleStartIndex: particleStreamIndex });
                 particleStreamIndex += PARTICLES_PER_CONNECTION;
             }
         }
-
         const totalParticles = connections.length * PARTICLES_PER_CONNECTION;
         if (totalParticles === 0) return;
-
         particleGeometry = new THREE.BufferGeometry();
-        const positions = new Float32Array(totalParticles * 3);
-        particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        particleGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(totalParticles * 3), 3));
         particleStream = new THREE.Points(particleGeometry, particleMaterial);
         scene.add(particleStream);
+    }
+    
+    function initMediaPipe() {
+        const faceMesh = new window.FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        faceMesh.onResults(onResults);
+        
+        const camera = new window.Camera(cameraFeed, {
+            onFrame: async () => { await faceMesh.send({ image: cameraFeed }); },
+            width: 640,
+            height: 480
+        });
+        camera.start().catch(err => {
+            console.warn("Camera access denied or not available. Reverting to mouse interaction.", err);
+        });
+    }
+
+    function onResults(results) {
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks[0]) {
+            const landmarks = results.multiFaceLandmarks[0];
+            updateFaceInteractions(landmarks);
+        } else {
+            interactionState = 'OPEN'; // Reset state if no face is detected
+        }
+    }
+
+    function updateFaceInteractions(landmarks) {
+        const distance = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+
+        const leftEAR = (distance(landmarks[159], landmarks[145]) + distance(landmarks[158], landmarks[144])) / (2 * distance(landmarks[33], landmarks[133]));
+        const rightEAR = (distance(landmarks[386], landmarks[374]) + distance(landmarks[385], landmarks[373])) / (2 * distance(landmarks[362], landmarks[263]));
+        const avgEAR = (leftEAR + rightEAR) / 2;
+
+        if (avgEAR < EAR_CLOSED_THRESHOLD) {
+            interactionState = 'CLOSED';
+        } else if (avgEAR < EAR_SQUINT_THRESHOLD) {
+            interactionState = 'SQUINT';
+        } else {
+            interactionState = 'OPEN';
+        }
+        
+        statusText.innerText = `Status: ${interactionState}`;
     }
 
     function runAnimation() {
@@ -244,158 +239,170 @@
         updateParticles();
         updateThreeObjects();
         renderer.render(scene, camera);
-        animationFrameId = requestAnimationFrame(runAnimation);
+        requestAnimationFrame(runAnimation);
     }
 
     function updateParticles() {
-        const mousePos = mousePosition;
-        
-        particles = particles.map(p => {
-            let forceX = 0;
-            let forceY = 0;
+        let currentSwayX = SWAY_AMPLITUDE_X;
+        let currentSwayY = SWAY_AMPLITUDE_Y;
+        let currentRestoringForce = RESTORING_FORCE;
 
-            if (mousePos.x !== null && mousePos.y !== null) {
-                const dx = p.x - mousePos.x;
-                const dy = p.y - mousePos.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
+        if (interactionState === 'SQUINT') {
+            currentSwayX *= 1.5;
+            currentSwayY *= 1.5;
+            currentRestoringForce *= 0.5;
+        }
 
-                if (distance < MOUSE_RADIUS) {
-                    const angle = Math.atan2(dy, dx);
-                    const force = (MOUSE_RADIUS - distance) / MOUSE_RADIUS;
-                    forceX += Math.cos(angle) * force * REPULSION_STRENGTH;
-                    forceY += Math.sin(angle) * force * REPULSION_STRENGTH;
+        particles.forEach((p) => {
+            let forceX = 0, forceY = 0;
+            
+            if (interactionState === 'CLOSED') {
+                forceX += (Math.random() - 0.5) * 0.01;
+                forceY += (Math.random() - 0.5) * 0.01;
+            } else { // OPEN or SQUINT
+                if (interactionState === 'OPEN' && mousePosition.x !== null) {
+                    const dx = p.x - mousePosition.x;
+                    const dy = p.y - mousePosition.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    if (distance < mouseRadius) {
+                        const angle = Math.atan2(dy, dx);
+                        const force = (mouseRadius - distance) / mouseRadius;
+                        forceX += Math.cos(angle) * force * REPULSION_STRENGTH;
+                        forceY += Math.sin(angle) * force * REPULSION_STRENGTH;
+                    }
                 }
+
+                const swayX = Math.sin(time * SWAY_FREQUENCY + p.sentenceId * 0.5) * currentSwayX;
+                const swayY = Math.cos(time * SWAY_FREQUENCY + p.id * 0.2) * currentSwayY;
+                const targetX = p.originX + swayX;
+                const targetY = p.originY + swayY;
+                forceX += (targetX - p.x) * currentRestoringForce;
+                forceY += (targetY - p.y) * currentRestoringForce;
             }
-
-            const swayX = Math.sin(time * SWAY_FREQUENCY + p.sentenceId * 0.5) * SWAY_AMPLITUDE_X;
-            const swayY = Math.cos(time * SWAY_FREQUENCY + p.id * 0.2) * SWAY_AMPLITUDE_Y;
-            const targetX = p.originX + swayX;
-            const targetY = p.originY + swayY;
-
-            forceX += (targetX - p.x) * RESTORING_FORCE;
-            forceY += (targetY - p.y) * RESTORING_FORCE;
-
-            let newVx = (p.vx + forceX) * DAMPING;
-            let newVy = (p.vy + forceY) * DAMPING;
-
-            const newX = p.x + newVx;
-            const newY = p.y + newVy;
-
-            return { ...p, x: newX, y: newY, vx: newVx, vy: newVy };
+            
+            p.vx = (p.vx + forceX) * DAMPING; 
+            p.vy = (p.vy + forceY) * DAMPING;
+            p.x += p.vx; 
+            p.y += p.vy;
         });
     }
 
     function updateThreeObjects() {
         if (!particles.length || !connections.length) return;
 
-        for (const p of particles) {
-            if (characterSprites[p.id]) {
-                characterSprites[p.id].position.set(p.x, p.y, 1);
+        let targetParticleOpacity = 0.4, targetParticleSize = particleSize, targetCharOpacity = 1.0;
+
+        if (interactionState === 'SQUINT') {
+            targetParticleOpacity = 0.3;
+            targetParticleSize = squintParticleSize;
+            targetCharOpacity = 0.2;
+        } else if (interactionState === 'CLOSED') {
+            targetParticleOpacity = 0.0;
+            targetCharOpacity = 0.0;
+        } else { // OPEN
+             const isAnyParticleBroken = particles.some(p => {
+                const distSq = Math.pow(p.x - p.originX, 2) + Math.pow(p.y - p.originY, 2);
+                return distSq > breakThreshold * breakThreshold;
+            });
+            if (isAnyParticleBroken) {
+                targetParticleOpacity = 0.0;
             }
         }
+
+        particleMaterial.opacity += (targetParticleOpacity - particleMaterial.opacity) * 0.1;
+        particleMaterial.size += (targetParticleSize - particleMaterial.size) * 0.1;
+        characterSprites.forEach(sprite => {
+            sprite.material.opacity += (targetCharOpacity - sprite.material.opacity) * 0.1;
+        });
+
+        particles.forEach((p, i) => {
+            if (characterSprites[i]) characterSprites[i].position.set(p.x, p.y, 1);
+        });
         
         const positions = particleGeometry.attributes.position.array;
         const flowOffset = (time * 0.5) % 1;
-
-        for (const connection of connections) {
-            const p1 = particles[connection.p1_id];
-            const p2 = particles[connection.p2_id];
-            if (!p1 || !p2) continue;
-
-            const curve = connection.curve;
-            const start = curve.points[0].set(p1.x, p1.y, 0);
-            const end = curve.points[3].set(p2.x, p2.y, 0);
-
+        connections.forEach(conn => {
+            const p1 = particles[conn.p1_id], p2 = particles[conn.p2_id];
+            if (!p1 || !p2) return;
+            const curve = conn.curve;
+            const start = curve.points[0].set(p1.x, p1.y, 0), end = curve.points[3].set(p2.x, p2.y, 0);
             const direction = new THREE.Vector3().subVectors(end, start);
-
-            if (direction.lengthSq() > 0.00001) {
+            if (direction.lengthSq() > 0.0001) {
                 const perpendicular = direction.clone().applyAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2).normalize();
-                const noise = time * 2 + connection.noiseSeed;
-                const sway = Math.sin(noise) * 3;
-                const droop = -2;
-                
-                const mid1_offset = perpendicular.clone().multiplyScalar(sway * 0.6).add(new THREE.Vector3(0, droop, 0));
-                const mid2_offset = perpendicular.clone().multiplyScalar(sway * 0.75).add(new THREE.Vector3(0, droop * 1.2, 0));
-
-                curve.points[1].lerpVectors(start, end, 0.3).add(mid1_offset);
-                curve.points[2].lerpVectors(start, end, 0.7).add(mid2_offset);
-
+                const sway = Math.sin(time * 2 + conn.noiseSeed) * 3, droop = -2;
+                curve.points[1].lerpVectors(start, end, 0.3).add(perpendicular.clone().multiplyScalar(sway * 0.6).add(new THREE.Vector3(0, droop, 0)));
+                curve.points[2].lerpVectors(start, end, 0.7).add(perpendicular.clone().multiplyScalar(sway * 0.75).add(new THREE.Vector3(0, droop * 1.2, 0)));
                 for (let i = 0; i < PARTICLES_PER_CONNECTION; i++) {
                     const t = (i / (PARTICLES_PER_CONNECTION - 1) + flowOffset) % 1;
-                    const point = curve.getPoint(t);
-                    const index = (connection.particleStartIndex + i) * 3;
-                    positions[index] = point.x;
-                    positions[index + 1] = point.y;
-                    positions[index + 2] = point.z;
+                    const point = curve.getPoint(t); const index = (conn.particleStartIndex + i) * 3;
+                    positions[index] = point.x; positions[index + 1] = point.y; positions[index + 2] = point.z;
                 }
             } else {
                 for (let i = 0; i < PARTICLES_PER_CONNECTION; i++) {
-                    const index = (connection.particleStartIndex + i) * 3;
-                    positions[index] = p1.x;
-                    positions[index + 1] = p1.y;
-                    positions[index + 2] = 0;
+                    const index = (conn.particleStartIndex + i) * 3;
+                    positions[index] = p1.x; positions[index + 1] = p1.y; positions[index + 2] = 0;
                 }
             }
-        }
-
-        particleGeometry.attributes.position.needsUpdate = true;
-
-        const isAnyParticleBroken = particles.some(p => {
-            const dist = Math.sqrt(Math.pow(p.x - p.originX, 2) + Math.pow(p.y - p.originY, 2));
-            return dist > BREAK_THRESHOLD;
         });
+        particleGeometry.attributes.position.needsUpdate = true;
+    }
+    
+    function startExperience() {
+        if (isStarted) return; isStarted = true;
+        startOverlay.classList.add('opacity-0', 'pointer-events-none');
+        startButton.classList.add('opacity-0');
+        muteButton.classList.remove('hidden'); muteButton.classList.add('fade-in');
+        debugUi.classList.remove('hidden');
+        audioPlayer.play().catch(e => console.warn("Audio blocked.", e));
+        initMediaPipe();
+        setTimeout(runAnimation, 100);
+    }
 
-        const targetOpacity = isAnyParticleBroken ? 0.0 : 0.4;
-        particleMaterial.opacity += (targetOpacity - particleMaterial.opacity) * 0.1;
+    function createCharacterSprite(char) {
+        const canvas = document.createElement('canvas'), context = canvas.getContext('2d');
+        const size = 64;
+        const dynamicFontSize = fontSize * 2;
+        canvas.width = size; canvas.height = size;
+        context.shadowColor = '#FFFFFF'; context.shadowBlur = 5;
+        context.font = `${dynamicFontSize}px serif`; context.fillStyle = '#041C32';
+        context.textAlign = 'center'; context.textBaseline = 'middle';
+        context.fillText(char, size / 2, size / 2); context.fillText(char, size / 2, size / 2);
+        const texture = new THREE.CanvasTexture(canvas);
+        const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+        const sprite = new THREE.Sprite(material);
+        const spriteScale = (size / 2) * scaleFactor;
+        sprite.scale.set(spriteScale, spriteScale, 1);
+        return sprite;
+    }
+
+    function createGlowTexture() {
+        const canvas = document.createElement('canvas'), context = canvas.getContext('2d'), size = 128;
+        canvas.width = size; canvas.height = size;
+        const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.2, 'rgba(255,255,255,0.7)');
+        gradient.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+        gradient.addColorStop(1, 'rgba(255,255,255,0)');
+        context.fillStyle = gradient; context.fillRect(0, 0, size, size);
+        return new THREE.CanvasTexture(canvas);
+    }
+    
+    function toggleMute() {
+        isMuted = !isMuted; audioPlayer.muted = isMuted;
+        unmutedIcon.classList.toggle('hidden', isMuted);
+        mutedIcon.classList.toggle('hidden', !isMuted);
     }
 
     function onWindowResize() {
         if (!renderer) return;
-        const width = mainContainer.clientWidth;
-        const height = mainContainer.clientHeight;
+        updateSizing();
+        const { clientWidth: width, clientHeight: height } = mainContainer;
         renderer.setSize(width, height);
-        camera.left = width / -2;
-        camera.right = width / 2;
-        camera.top = height / 2;
-        camera.bottom = height / -2;
+        camera.left = width / -2; camera.right = width / 2; camera.top = height / 2; camera.bottom = height / -2;
         camera.updateProjectionMatrix();
         initializeParticles();
     }
-
-    function startExperience() {
-        if (isStarted) return;
-        isStarted = true;
-
-        startOverlay.classList.add('opacity-0', 'pointer-events-none');
-        startButton.classList.add('opacity-0');
-        
-        muteButton.classList.remove('hidden');
-        muteButton.classList.add('fade-in');
-
-        audioPlayer.play().catch(e => {
-            console.warn("Audio playback was blocked by the browser.", e);
-        });
-
-        setTimeout(() => {
-            runAnimation();
-        }, 100);
-    }
-
-    function toggleMute() {
-        isMuted = !isMuted;
-        audioPlayer.muted = isMuted;
-        if(isMuted){
-            unmutedIcon.classList.add('hidden');
-            mutedIcon.classList.remove('hidden');
-        } else {
-            unmutedIcon.classList.remove('hidden');
-            mutedIcon.classList.add('hidden');
-        }
-    }
-
-    // --- Event Listeners ---
-    startButton.addEventListener('click', startExperience);
-    muteButton.addEventListener('click', toggleMute);
+    
     mainContainer.addEventListener('mousemove', (event) => {
         const rect = mainContainer.getBoundingClientRect();
         const x = event.clientX - rect.left - rect.width / 2;
@@ -405,14 +412,16 @@
     mainContainer.addEventListener('mouseleave', () => {
         mousePosition = { x: null, y: null };
     });
-    window.addEventListener('resize', onWindowResize);
-    
-    // --- Initial Setup ---
-    window.addEventListener('DOMContentLoaded', () => {
-        initThree();
-        initializeParticles();
-    });
 
+    startButton.addEventListener('click', startExperience);
+    muteButton.addEventListener('click', toggleMute);
+    window.addEventListener('resize', onWindowResize);
+    window.addEventListener('DOMContentLoaded', () => { 
+        updateSizing();
+        initThree(); 
+        initializeParticles(); 
+    });
   </script>
+<script type="module" src="/index.tsx"></script>
 </body>
 </html>
