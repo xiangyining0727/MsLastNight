@@ -4,43 +4,51 @@
   <meta charset="UTF-8">
   <title>The Viscous Bonds</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- MediaPipe Libraries -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cactus+Classical+Serif&display=swap" rel="stylesheet">
+
   <style>
     body { margin: 0; overflow: hidden; background-color: #001133; }
     canvas { display: block; width: 100%; height: 100%; }
     .fade-in { animation: fadeIn 1.5s ease-in-out 1s forwards; }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    
+    /* 关键 CSS：虽然不可见，但声明使用了该字体，迫使浏览器去下载它 */
+    #font-loader {
+        font-family: 'Cactus Classical Serif', serif;
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+    }
   </style>
 <link rel="stylesheet" href="/index.css">
 </head>
 <body class="bg-[#001133]">
 
-  <!-- Start Overlay -->
+  <div id="font-loader">.</div>
+
   <div id="start-overlay" class="absolute inset-0 z-30 flex items-center justify-center bg-[#001133] transition-opacity duration-[1500ms]">
     <button id="start-button" class="text-white/70 border border-white/50 rounded-full px-8 py-3 text-lg font-light tracking-widest hover:bg-white/10 hover:text-white transition-all duration-500 ease-in-out">
       LastNight
     </button>
   </div>
 
-  <!-- Debug UI -->
   <div id="debug-ui" class="absolute top-2 left-2 z-20 p-2 bg-black/30 text-white/70 font-mono text-xs rounded hidden">
     <div id="status-text">Status: N/A</div>
   </div>
 
-  <!-- Main Content -->
   <div id="main-container" class="w-screen h-screen cursor-pointer relative" style="background-image: radial-gradient(circle at 50% 50%, #2a1a1930, #001133 70%);">
     <canvas id="render-canvas"></canvas>
   </div>
   
-  <!-- MediaPipe Camera Feed (now hidden) -->
   <video id="camera-feed" class="hidden" muted autoplay playsinline></video>
 
-  <!-- Audio Player -->
   <audio id="audio-player" src="music.mp3" loop></audio>
 
-  <!-- Mute Button -->
   <button id="mute-button" class="absolute top-4 right-4 z-20 text-white/50 hover:text-white transition-opacity duration-500 opacity-0 hidden">
     <svg id="unmuted-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
@@ -86,6 +94,10 @@
     const BASE_MOUSE_RADIUS = 30, REPULSION_STRENGTH = 1.5, BASE_BREAK_THRESHOLD = 40;
     const BASE_PARTICLE_SIZE = 1.5, SQUINT_PARTICLE_SIZE = 5.0;
 
+    // --- Font Configuration ---
+    // 这里定义我们要用的字体名字，必须和 Google Fonts CSS 里的名字完全一致
+    const TARGET_FONT = 'Cactus Classical Serif'; 
+
     const lyricsSource = "麥記的最後一夜 白燈、廣東歌與露宿者 這惡俗的不捨 比一起更好過些 才是你遠走的主因 或者? 麥記的最後一夜 橙汁、朱古力與露宿者 合照留下一些 轉地方睡最後今夜 完結這一場冬天的狂野 電卷風馳 從此各自上車";
 
     function updateSizing() {
@@ -93,18 +105,13 @@
         if (lines.length === 0) {
             scaleFactor = 1;
         } else {
-            // Calculate scale factor based on height to fill 80% of the screen
             const totalContentHeightAtBase = lines.length * BASE_LINE_HEIGHT;
             const scaleFactorHeight = (mainContainer.clientHeight * 0.8) / totalContentHeightAtBase;
-
-            // Calculate scale factor based on width to fill 90% of the screen
             const longestLineLength = Math.max(...lines.map(l => l.length));
-            const charSpacingAtBase = BASE_FONT_SIZE + 4; // Approx char width + padding
+            const charSpacingAtBase = BASE_FONT_SIZE + 4; 
             const totalContentWidthAtBase = longestLineLength * charSpacingAtBase;
             const scaleFactorWidth = (mainContainer.clientWidth * 0.9) / totalContentWidthAtBase;
-
-            // Use the smaller of the two scale factors to ensure everything fits
-            scaleFactor = Math.min(scaleFactorHeight, scaleFactorWidth, 2.5); // Cap at 2.5x
+            scaleFactor = Math.min(scaleFactorHeight, scaleFactorWidth, 2.5);
         }
         
         fontSize = BASE_FONT_SIZE * scaleFactor;
@@ -147,7 +154,7 @@
         const newSentences = [], allParticles = [];
         const totalContentHeight = lines.length * lineHeight;
         const startY = (containerHeight - totalContentHeight) / 2;
-        const charSpacing = fontSize + (4 * scaleFactor);
+        const charSpacing = fontSize + (8 * scaleFactor);
 
         lines.forEach((line, sentenceIndex) => {
             const sentenceParticleIds = [];
@@ -160,6 +167,8 @@
                 const originY = -(startY + sentenceIndex * lineHeight) + containerHeight / 2;
                 const particle = { id: particleId, char, sentenceId: sentenceIndex, originX, originY, x: originX, y: originY, vx: 0, vy: 0 };
                 sentenceParticleIds.push(particleId); allParticles.push(particle);
+                
+                // 这里调用创建文字，这时字体应该已经加载好了
                 const sprite = createCharacterSprite(char);
                 sprite.position.set(originX, originY, 1);
                 characterSprites.push(sprite); scene.add(sprite);
@@ -212,7 +221,7 @@
             const landmarks = results.multiFaceLandmarks[0];
             updateFaceInteractions(landmarks);
         } else {
-            interactionState = 'OPEN'; // Reset state if no face is detected
+            interactionState = 'OPEN'; 
         }
     }
 
@@ -259,7 +268,7 @@
             if (interactionState === 'CLOSED') {
                 forceX += (Math.random() - 0.5) * 0.01;
                 forceY += (Math.random() - 0.5) * 0.01;
-            } else { // OPEN or SQUINT
+            } else { 
                 if (interactionState === 'OPEN' && mousePosition.x !== null) {
                     const dx = p.x - mousePosition.x;
                     const dy = p.y - mousePosition.y;
@@ -364,7 +373,12 @@
         const dynamicFontSize = fontSize * 2;
         canvas.width = size; canvas.height = size;
         context.shadowColor = '#FFFFFF'; context.shadowBlur = 5;
-        context.font = `${dynamicFontSize}px serif`; context.fillStyle = '#041C32';
+        
+        // --- 字体设置核心 ---
+        // 使用单引号将字体名括起来，并提供后备 serif
+        context.font = `${dynamicFontSize}px '${TARGET_FONT}', serif`; 
+        
+        context.fillStyle = '#041C32';
         context.textAlign = 'center'; context.textBaseline = 'middle';
         context.fillText(char, size / 2, size / 2); context.fillText(char, size / 2, size / 2);
         const texture = new THREE.CanvasTexture(canvas);
@@ -416,9 +430,23 @@
     startButton.addEventListener('click', startExperience);
     muteButton.addEventListener('click', toggleMute);
     window.addEventListener('resize', onWindowResize);
-    window.addEventListener('DOMContentLoaded', () => { 
+    
+    // --- 异步初始化逻辑 (修复字体加载问题) ---
+    window.addEventListener('DOMContentLoaded', async () => { 
         updateSizing();
         initThree(); 
+        
+        console.log(`Waiting for font: ${TARGET_FONT}...`);
+        
+        // 尝试强制加载字体
+        try {
+            // 参数字符串格式: "style weight size family"
+            await document.fonts.load(`16px "${TARGET_FONT}"`);
+            console.log('Font loaded successfully.');
+        } catch (err) {
+            console.warn('Font load timeout or error, falling back to serif.', err);
+        }
+
         initializeParticles(); 
     });
   </script>
