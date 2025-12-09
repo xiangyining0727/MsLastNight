@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>The Viscous Bonds</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #001133;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .fade-in {
+        animation: fadeIn 1.5s ease-in-out 1s forwards;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+  </style>
+</head>
+<body class="bg-[#001133]">
+
+  <!-- Start Overlay -->
+  <div id="start-overlay" class="absolute inset-0 z-20 flex items-center justify-center bg-[#001133] transition-opacity duration-[1500ms]">
+    <button id="start-button" class="text-white/70 border border-white/50 rounded-full px-8 py-3 text-lg font-light tracking-widest hover:bg-white/10 hover:text-white transition-all duration-500 ease-in-out">
+      LastNight
+    </button>
+  </div>
+
+  <!-- Main Content -->
+  <div id="main-container" class="w-screen h-screen cursor-pointer relative" style="background-image: radial-gradient(circle at 50% 50%, #2a1a1930, #001133 70%);">
+    <canvas id="render-canvas"></canvas>
+  </div>
+
+  <!-- Audio Player -->
+  <audio id="audio-player" src="music.mp3" loop></audio>
+
+  <!-- Mute Button -->
+  <button id="mute-button" class="absolute bottom-4 right-4 z-10 text-white/50 hover:text-white transition-opacity duration-500 opacity-0 hidden">
+    <svg id="unmuted-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+    </svg>
+    <svg id="muted-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 9l4 4m0-4l-4 4" />
+    </svg>
+  </button>
+
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.166.1/build/three.module.js';
+
+    // --- DOM Elements ---
+    const canvas = document.getElementById('render-canvas');
+    const audioPlayer = document.getElementById('audio-player');
+    const startOverlay = document.getElementById('start-overlay');
+    const startButton = document.getElementById('start-button');
+    const muteButton = document.getElementById('mute-button');
+    const unmutedIcon = document.getElementById('unmuted-icon');
+    const mutedIcon = document.getElementById('muted-icon');
+    const mainContainer = document.getElementById('main-container');
+
+    // --- Global State ---
+    let animationFrameId = null;
+    let time = 0;
+    let scene, camera, renderer, characterSprites, connections, particleStream, particleMaterial, particleGeometry;
+    let particles = [];
+    let sentences = [];
+    let mousePosition = { x: null, y: null };
+    let isStarted = false;
+    let isMuted = false;
+
+    // --- Physics & Display Constants ---
+    const FONT_SIZE = 16;
+    const LINE_HEIGHT = 28;
+    const MOUSE_RADIUS = 20;
+    const REPULSION_STRENGTH = 1.5;
+    const RESTORING_FORCE = 0.002;
+    const DAMPING = 0.92;
+    const BREAK_THRESHOLD = 40;
+    const SWAY_AMPLITUDE_X = 5;
+    const SWAY_AMPLITUDE_Y = 3;
+    const SWAY_FREQUENCY = 0.5;
+    const PARTICLES_PER_CONNECTION = 20;
+
+    const lyricsSource = "麥記的最後一夜 白燈、廣東歌與露宿者 這惡俗的不捨 比一起更好過些 才是你遠走的主因 或者? 麥記的最後一夜 橙汁、朱古力與露宿者 合照留下一些 轉地方睡最後今夜 完結這一場冬天的狂野 電卷風馳 從此各自上車";
+
+    function createGlowTexture() {
+        const canvas = document.createElement('canvas');
+        const size = 64;
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d');
+        const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.2, 'rgba(255,255,255,0.7)');
+        gradient.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+        gradient.addColorStop(1, 'rgba(255,255,255,0)');
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, size, size);
+        return new THREE.CanvasTexture(canvas);
+    }
+
+    function createCharacterSprite(char) {
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        const size = 64;
+        const font_size = FONT_SIZE * 2;
+        canvas.width = size;
+        canvas.height = size;
+        context.shadowColor = '#FFFFFF';
+        context.shadowBlur = 5;
+        context.font = `${font_size}px serif`;
+        context.fillStyle = '#041C32';
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillText(char, size / 2, size / 2);
+        context.fillText(char, size / 2, size / 2);
+        const texture = new THREE.CanvasTexture(canvas);
+        const material = new THREE.SpriteMaterial({ map: texture });
+        const sprite = new THREE.Sprite(material);
+        sprite.scale.set(size / 2, size / 2, 1);
+        return sprite;
+    }
+
+    function initThree() {
+        const width = mainContainer.clientWidth;
+        const height = mainContainer.clientHeight;
+        
+        scene = new THREE.Scene();
+        camera = new THREE.OrthographicCamera(width / -2, width / 2, height / 2, height / -2, -100, 100);
+        camera.position.z = 5;
+        
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+        renderer.setSize(width, height);
+        renderer.setPixelRatio(window.devicePixelRatio);
+
+        particleMaterial = new THREE.PointsMaterial({
+            map: createGlowTexture(),
+            color: 0xFFFFFF,
+            size: 1.5,
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            opacity: 0.4,
+            sizeAttenuation: true,
+            depthWrite: false,
+        });
+    }
+
+    function initializeParticles() {
+        if (!scene) return;
+        
+        if (particleStream) scene.remove(particleStream);
+        if (particleGeometry) particleGeometry.dispose();
+        if (characterSprites) characterSprites.forEach(s => scene.remove(s));
+
+        characterSprites = [];
+        connections = [];
+        
+        const containerWidth = mainContainer.clientWidth;
+        const containerHeight = mainContainer.clientHeight;
+
+        const lines = lyricsSource.split(' ').filter(line => line.length > 0);
+        let particleIdCounter = 0;
+        
+        const newSentences = [];
+        const allParticles = [];
+
+        const totalContentHeight = lines.length * LINE_HEIGHT;
+        const startY = (containerHeight - totalContentHeight) / 2;
+
+        lines.forEach((line, sentenceIndex) => {
+            const sentenceParticleIds = [];
+            const sentenceWidth = line.length * (FONT_SIZE + 4);
+            const startX = (containerWidth - sentenceWidth) / 2;
+
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                const particleId = particleIdCounter++;
+                const originX = startX + i * (FONT_SIZE + 4) - containerWidth / 2;
+                const originY = -(startY + sentenceIndex * LINE_HEIGHT) + containerHeight / 2;
+
+                const particle = {
+                    id: particleId, char, sentenceId: sentenceIndex,
+                    originX, originY,
+                    x: originX, y: originY,
+                    vx: 0, vy: 0,
+                };
+                sentenceParticleIds.push(particleId);
+                allParticles.push(particle);
+
+                const sprite = createCharacterSprite(char);
+                sprite.position.set(originX, originY, 1);
+                characterSprites.push(sprite);
+                scene.add(sprite);
+            }
+            newSentences.push({ id: sentenceIndex, particleIds: sentenceParticleIds });
+        });
+
+        particles = allParticles;
+        sentences = newSentences;
+
+        let particleStreamIndex = 0;
+        for (const sentence of newSentences) {
+            for (let i = 0; i < sentence.particleIds.length - 1; i++) {
+                const p1 = allParticles[sentence.particleIds[i]];
+                const p2 = allParticles[sentence.particleIds[i + 1]];
+                
+                const curve = new THREE.CatmullRomCurve3([
+                    new THREE.Vector3(p1.x, p1.y, 0),
+                    new THREE.Vector3(),
+                    new THREE.Vector3(),
+                    new THREE.Vector3(p2.x, p2.y, 0)
+                ]);
+                
+                connections.push({
+                    curve,
+                    p1_id: p1.id,
+                    p2_id: p2.id,
+                    noiseSeed: Math.random() * 100,
+                    particleStartIndex: particleStreamIndex
+                });
+                particleStreamIndex += PARTICLES_PER_CONNECTION;
+            }
+        }
+
+        const totalParticles = connections.length * PARTICLES_PER_CONNECTION;
+        if (totalParticles === 0) return;
+
+        particleGeometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(totalParticles * 3);
+        particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        particleStream = new THREE.Points(particleGeometry, particleMaterial);
+        scene.add(particleStream);
+    }
+
+    function runAnimation() {
+        time += 0.015;
+        updateParticles();
+        updateThreeObjects();
+        renderer.render(scene, camera);
+        animationFrameId = requestAnimationFrame(runAnimation);
+    }
+
+    function updateParticles() {
+        const mousePos = mousePosition;
+        
+        particles = particles.map(p => {
+            let forceX = 0;
+            let forceY = 0;
+
+            if (mousePos.x !== null && mousePos.y !== null) {
+                const dx = p.x - mousePos.x;
+                const dy = p.y - mousePos.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < MOUSE_RADIUS) {
+                    const angle = Math.atan2(dy, dx);
+                    const force = (MOUSE_RADIUS - distance) / MOUSE_RADIUS;
+                    forceX += Math.cos(angle) * force * REPULSION_STRENGTH;
+                    forceY += Math.sin(angle) * force * REPULSION_STRENGTH;
+                }
+            }
+
+            const swayX = Math.sin(time * SWAY_FREQUENCY + p.sentenceId * 0.5) * SWAY_AMPLITUDE_X;
+            const swayY = Math.cos(time * SWAY_FREQUENCY + p.id * 0.2) * SWAY_AMPLITUDE_Y;
+            const targetX = p.originX + swayX;
+            const targetY = p.originY + swayY;
+
+            forceX += (targetX - p.x) * RESTORING_FORCE;
+            forceY += (targetY - p.y) * RESTORING_FORCE;
+
+            let newVx = (p.vx + forceX) * DAMPING;
+            let newVy = (p.vy + forceY) * DAMPING;
+
+            const newX = p.x + newVx;
+            const newY = p.y + newVy;
+
+            return { ...p, x: newX, y: newY, vx: newVx, vy: newVy };
+        });
+    }
+
+    function updateThreeObjects() {
+        if (!particles.length || !connections.length) return;
+
+        for (const p of particles) {
+            if (characterSprites[p.id]) {
+                characterSprites[p.id].position.set(p.x, p.y, 1);
+            }
+        }
+        
+        const positions = particleGeometry.attributes.position.array;
+        const flowOffset = (time * 0.5) % 1;
+
+        for (const connection of connections) {
+            const p1 = particles[connection.p1_id];
+            const p2 = particles[connection.p2_id];
+            if (!p1 || !p2) continue;
+
+            const curve = connection.curve;
+            const start = curve.points[0].set(p1.x, p1.y, 0);
+            const end = curve.points[3].set(p2.x, p2.y, 0);
+
+            const direction = new THREE.Vector3().subVectors(end, start);
+
+            if (direction.lengthSq() > 0.00001) {
+                const perpendicular = direction.clone().applyAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2).normalize();
+                const noise = time * 2 + connection.noiseSeed;
+                const sway = Math.sin(noise) * 3;
+                const droop = -2;
+                
+                const mid1_offset = perpendicular.clone().multiplyScalar(sway * 0.6).add(new THREE.Vector3(0, droop, 0));
+                const mid2_offset = perpendicular.clone().multiplyScalar(sway * 0.75).add(new THREE.Vector3(0, droop * 1.2, 0));
+
+                curve.points[1].lerpVectors(start, end, 0.3).add(mid1_offset);
+                curve.points[2].lerpVectors(start, end, 0.7).add(mid2_offset);
+
+                for (let i = 0; i < PARTICLES_PER_CONNECTION; i++) {
+                    const t = (i / (PARTICLES_PER_CONNECTION - 1) + flowOffset) % 1;
+                    const point = curve.getPoint(t);
+                    const index = (connection.particleStartIndex + i) * 3;
+                    positions[index] = point.x;
+                    positions[index + 1] = point.y;
+                    positions[index + 2] = point.z;
+                }
+            } else {
+                for (let i = 0; i < PARTICLES_PER_CONNECTION; i++) {
+                    const index = (connection.particleStartIndex + i) * 3;
+                    positions[index] = p1.x;
+                    positions[index + 1] = p1.y;
+                    positions[index + 2] = 0;
+                }
+            }
+        }
+
+        particleGeometry.attributes.position.needsUpdate = true;
+
+        const isAnyParticleBroken = particles.some(p => {
+            const dist = Math.sqrt(Math.pow(p.x - p.originX, 2) + Math.pow(p.y - p.originY, 2));
+            return dist > BREAK_THRESHOLD;
+        });
+
+        const targetOpacity = isAnyParticleBroken ? 0.0 : 0.4;
+        particleMaterial.opacity += (targetOpacity - particleMaterial.opacity) * 0.1;
+    }
+
+    function onWindowResize() {
+        if (!renderer) return;
+        const width = mainContainer.clientWidth;
+        const height = mainContainer.clientHeight;
+        renderer.setSize(width, height);
+        camera.left = width / -2;
+        camera.right = width / 2;
+        camera.top = height / 2;
+        camera.bottom = height / -2;
+        camera.updateProjectionMatrix();
+        initializeParticles();
+    }
+
+    function startExperience() {
+        if (isStarted) return;
+        isStarted = true;
+
+        startOverlay.classList.add('opacity-0', 'pointer-events-none');
+        startButton.classList.add('opacity-0');
+        
+        muteButton.classList.remove('hidden');
+        muteButton.classList.add('fade-in');
+
+        audioPlayer.play().catch(e => {
+            console.warn("Audio playback was blocked by the browser.", e);
+        });
+
+        setTimeout(() => {
+            runAnimation();
+        }, 100);
+    }
+
+    function toggleMute() {
+        isMuted = !isMuted;
+        audioPlayer.muted = isMuted;
+        if(isMuted){
+            unmutedIcon.classList.add('hidden');
+            mutedIcon.classList.remove('hidden');
+        } else {
+            unmutedIcon.classList.remove('hidden');
+            mutedIcon.classList.add('hidden');
+        }
+    }
+
+    // --- Event Listeners ---
+    startButton.addEventListener('click', startExperience);
+    muteButton.addEventListener('click', toggleMute);
+    mainContainer.addEventListener('mousemove', (event) => {
+        const rect = mainContainer.getBoundingClientRect();
+        const x = event.clientX - rect.left - rect.width / 2;
+        const y = -(event.clientY - rect.top) + rect.height / 2;
+        mousePosition = { x, y };
+    });
+    mainContainer.addEventListener('mouseleave', () => {
+        mousePosition = { x: null, y: null };
+    });
+    window.addEventListener('resize', onWindowResize);
+    
+    // --- Initial Setup ---
+    window.addEventListener('DOMContentLoaded', () => {
+        initThree();
+        initializeParticles();
+    });
+
+  </script>
+</body>
+</html>
